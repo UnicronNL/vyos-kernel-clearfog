@@ -147,6 +147,7 @@ static inline const char *phy_modes(phy_interface_t interface)
 #define MII_ADDR_C45 (1<<30)
 
 struct device;
+struct phylink;
 struct sk_buff;
 
 /*
@@ -429,10 +430,12 @@ struct phy_device {
 
 	struct mutex lock;
 
+	struct phylink *phylink;
 	struct net_device *attached_dev;
 
 	u8 mdix;
 
+	void (*phy_link_change)(struct phy_device *, bool up, bool do_carrier);
 	void (*adjust_link)(struct net_device *dev);
 };
 #define to_phy_device(d) container_of(d, struct phy_device, dev)
@@ -798,6 +801,7 @@ int phy_ethtool_sset(struct phy_device *phydev, struct ethtool_cmd *cmd);
 int phy_ethtool_gset(struct phy_device *phydev, struct ethtool_cmd *cmd);
 int phy_mii_ioctl(struct phy_device *phydev, struct ifreq *ifr, int cmd);
 int phy_start_interrupts(struct phy_device *phydev);
+const char *phy_speed_to_str(int speed);
 void phy_print_status(struct phy_device *phydev);
 void phy_device_free(struct phy_device *phydev);
 int phy_set_max_speed(struct phy_device *phydev, u32 max_speed);

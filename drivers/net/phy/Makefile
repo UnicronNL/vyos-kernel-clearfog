@@ -1,7 +1,9 @@
 # Makefile for Linux PHY drivers
 
-libphy-objs			:= phy.o phy_device.o mdio_bus.o
+libphy-y			:= phy.o phy_device.o mdio_bus.o
+libphy-$(CONFIG_SWPHY)		+= swphy.o
 
+obj-$(CONFIG_PHYLINK)		+= phylink.o
 obj-$(CONFIG_PHYLIB)		+= libphy.o
 obj-$(CONFIG_AQUANTIA_PHY)	+= aquantia.o
 obj-$(CONFIG_MARVELL_PHY)	+= marvell.o
@@ -24,6 +26,7 @@ obj-$(CONFIG_LSI_ET1011C_PHY)	+= et1011c.o
 obj-$(CONFIG_FIXED_PHY)		+= fixed_phy.o
 obj-$(CONFIG_MDIO_BITBANG)	+= mdio-bitbang.o
 obj-$(CONFIG_MDIO_GPIO)		+= mdio-gpio.o
+obj-$(CONFIG_MDIO_I2C)		+= mdio-i2c.o
 obj-$(CONFIG_NATIONAL_PHY)	+= national.o
 obj-$(CONFIG_DP83640_PHY)	+= dp83640.o
 obj-$(CONFIG_DP83848_PHY)	+= dp83848.o
@@ -42,3 +45,4 @@ obj-$(CONFIG_MDIO_MOXART)	+= mdio-moxart.o
 obj-$(CONFIG_MDIO_BCM_UNIMAC)	+= mdio-bcm-unimac.o
 obj-$(CONFIG_MICROCHIP_PHY)	+= microchip.o
 obj-$(CONFIG_MDIO_BCM_IPROC)	+= mdio-bcm-iproc.o
+obj-$(CONFIG_SFP)		+= sfp.o
