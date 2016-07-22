@@ -1,6 +1,6 @@
 # Makefile for Linux PHY drivers
 
-libphy-y			:= phy.o phy_device.o mdio_bus.o
+libphy-y			:= phy.o phy_device.o mdio_bus.o mdio_device.o
 libphy-$(CONFIG_SWPHY)		+= swphy.o
 
 obj-$(CONFIG_PHYLINK)		+= phylink.o

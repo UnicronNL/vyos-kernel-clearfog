@@ -52,6 +52,9 @@ struct swap_info_struct;
 struct seq_file;
 struct workqueue_struct;
 struct iov_iter;
+#ifdef CONFIG_SPLICE_FROM_SOCKET
+struct socket;
+#endif
 
 extern void __init inode_init(void);
 extern void __init inode_init_early(void);
@@ -1207,6 +1210,16 @@ static inline struct inode *file_inode(const struct file *f)
 	return f->f_inode;
 }
 
+static inline struct dentry *file_dentry(const struct file *file)
+{
+	struct dentry *dentry = file->f_path.dentry;
+
+	if (unlikely(dentry->d_flags & DCACHE_OP_REAL))
+		return dentry->d_op->d_real(dentry, file_inode(file));
+	else
+		return dentry;
+}
+
 static inline int locks_lock_file_wait(struct file *filp, struct file_lock *fl)
 {
 	return locks_lock_inode_wait(file_inode(filp), fl);
@@ -1622,6 +1635,9 @@ struct file_operations {
 	int (*flock) (struct file *, int, struct file_lock *);
 	ssize_t (*splice_write)(struct pipe_inode_info *, struct file *, loff_t *, size_t, unsigned int);
 	ssize_t (*splice_read)(struct file *, loff_t *, struct pipe_inode_info *, size_t, unsigned int);
+#ifdef CONFIG_SPLICE_FROM_SOCKET
+	ssize_t (*splice_from_socket)(struct file *file, struct socket *sock, loff_t __user *ppos, size_t count);
+#endif
 	int (*setlease)(struct file *, long, struct file_lock **, void **);
 	long (*fallocate)(struct file *file, int mode, loff_t offset,
 			  loff_t len);

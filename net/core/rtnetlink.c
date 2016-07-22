@@ -806,11 +806,6 @@ static void copy_rtnl_link_stats(struct rtnl_link_stats *a,
 	a->tx_compressed = b->tx_compressed;
 }
 
-static void copy_rtnl_link_stats64(void *v, const struct rtnl_link_stats64 *b)
-{
-	memcpy(v, b, sizeof(*b));
-}
-
 /* All VF info */
 static inline int rtnl_vfinfo_size(const struct net_device *dev,
 				   u32 ext_filter_mask)
@@ -893,6 +888,8 @@ static noinline size_t if_nlmsg_size(const struct net_device *dev,
 	       + nla_total_size(4) /* IFLA_PROMISCUITY */
 	       + nla_total_size(4) /* IFLA_NUM_TX_QUEUES */
 	       + nla_total_size(4) /* IFLA_NUM_RX_QUEUES */
+	       + nla_total_size(4) /* IFLA_MAX_GSO_SEGS */
+	       + nla_total_size(4) /* IFLA_MAX_GSO_SIZE */
 	       + nla_total_size(1) /* IFLA_OPERSTATE */
 	       + nla_total_size(1) /* IFLA_LINKMODE */
 	       + nla_total_size(4) /* IFLA_CARRIER_CHANGES */
@@ -905,6 +902,7 @@ static noinline size_t if_nlmsg_size(const struct net_device *dev,
 	       + rtnl_link_get_af_size(dev, ext_filter_mask) /* IFLA_AF_SPEC */
 	       + nla_total_size(MAX_PHYS_ITEM_ID_LEN) /* IFLA_PHYS_PORT_ID */
 	       + nla_total_size(MAX_PHYS_ITEM_ID_LEN) /* IFLA_PHYS_SWITCH_ID */
+	       + nla_total_size(IFNAMSIZ) /* IFLA_PHYS_PORT_NAME */
 	       + nla_total_size(1); /* IFLA_PROTO_DOWN */
 
 }
@@ -1027,6 +1025,7 @@ static int rtnl_phys_switch_id_fill(struct sk_buff *skb, struct net_device *dev)
 {
 	int err;
 	struct switchdev_attr attr = {
+		.orig_dev = dev,
 		.id = SWITCHDEV_ATTR_ID_PORT_PARENT_ID,
 		.flags = SWITCHDEV_F_NO_RECURSE,
 	};
@@ -1048,25 +1047,23 @@ static int rtnl_phys_switch_id_fill(struct sk_buff *skb, struct net_device *dev)
 static noinline_for_stack int rtnl_fill_stats(struct sk_buff *skb,
 					      struct net_device *dev)
 {
-	const struct rtnl_link_stats64 *stats;
-	struct rtnl_link_stats64 temp;
+	struct rtnl_link_stats64 *sp;
 	struct nlattr *attr;
-
-	stats = dev_get_stats(dev, &temp);
-
-	attr = nla_reserve(skb, IFLA_STATS,
-			   sizeof(struct rtnl_link_stats));
-	if (!attr)
-		return -EMSGSIZE;
-
-	copy_rtnl_link_stats(nla_data(attr), stats);
 
 	attr = nla_reserve(skb, IFLA_STATS64,
 			   sizeof(struct rtnl_link_stats64));
 	if (!attr)
 		return -EMSGSIZE;
 
-	copy_rtnl_link_stats64(nla_data(attr), stats);
+	sp = nla_data(attr);
+	dev_get_stats(dev, sp);
+
+	attr = nla_reserve(skb, IFLA_STATS,
+			   sizeof(struct rtnl_link_stats));
+	if (!attr)
+		return -EMSGSIZE;
+
+	copy_rtnl_link_stats(nla_data(attr), sp);
 
 	return 0;
 }
@@ -1174,14 +1171,16 @@ static noinline_for_stack int rtnl_fill_vfinfo(struct sk_buff *skb,
 
 static int rtnl_fill_link_ifmap(struct sk_buff *skb, struct net_device *dev)
 {
-	struct rtnl_link_ifmap map = {
-		.mem_start   = dev->mem_start,
-		.mem_end     = dev->mem_end,
-		.base_addr   = dev->base_addr,
-		.irq         = dev->irq,
-		.dma         = dev->dma,
-		.port        = dev->if_port,
-	};
+	struct rtnl_link_ifmap map;
+
+	memset(&map, 0, sizeof(map));
+	map.mem_start   = dev->mem_start;
+	map.mem_end     = dev->mem_end;
+	map.base_addr   = dev->base_addr;
+	map.irq         = dev->irq;
+	map.dma         = dev->dma;
+	map.port        = dev->if_port;
+
 	if (nla_put(skb, IFLA_MAP, sizeof(map), &map))
 		return -EMSGSIZE;
 
@@ -1220,6 +1219,8 @@ static int rtnl_fill_ifinfo(struct sk_buff *skb, struct net_device *dev,
 	    nla_put_u32(skb, IFLA_GROUP, dev->group) ||
 	    nla_put_u32(skb, IFLA_PROMISCUITY, dev->promiscuity) ||
 	    nla_put_u32(skb, IFLA_NUM_TX_QUEUES, dev->num_tx_queues) ||
+	    nla_put_u32(skb, IFLA_GSO_MAX_SEGS, dev->gso_max_segs) ||
+	    nla_put_u32(skb, IFLA_GSO_MAX_SIZE, dev->gso_max_size) ||
 #ifdef CONFIG_RPS
 	    nla_put_u32(skb, IFLA_NUM_RX_QUEUES, dev->num_rx_queues) ||
 #endif

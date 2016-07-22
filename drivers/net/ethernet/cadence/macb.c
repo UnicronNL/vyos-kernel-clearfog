@@ -439,12 +439,6 @@ static int macb_mii_init(struct macb *bp)
 	bp->mii_bus->parent = &bp->dev->dev;
 	pdata = dev_get_platdata(&bp->pdev->dev);
 
-	bp->mii_bus->irq = kmalloc(sizeof(int)*PHY_MAX_ADDR, GFP_KERNEL);
-	if (!bp->mii_bus->irq) {
-		err = -ENOMEM;
-		goto err_out_free_mdiobus;
-	}
-
 	dev_set_drvdata(&bp->dev->dev, bp->mii_bus);
 
 	np = bp->pdev->dev.of_node;
@@ -469,9 +463,6 @@ static int macb_mii_init(struct macb *bp)
 				goto err_out_unregister_bus;
 		}
 	} else {
-		for (i = 0; i < PHY_MAX_ADDR; i++)
-			bp->mii_bus->irq[i] = PHY_POLL;
-
 		if (pdata)
 			bp->mii_bus->phy_mask = pdata->phy_mask;
 
@@ -479,7 +470,7 @@ static int macb_mii_init(struct macb *bp)
 	}
 
 	if (err)
-		goto err_out_free_mdio_irq;
+		goto err_out_free_mdiobus;
 
 	err = macb_mii_probe(bp->dev);
 	if (err)
@@ -489,8 +480,6 @@ static int macb_mii_init(struct macb *bp)
 
 err_out_unregister_bus:
 	mdiobus_unregister(bp->mii_bus);
-err_out_free_mdio_irq:
-	kfree(bp->mii_bus->irq);
 err_out_free_mdiobus:
 	mdiobus_free(bp->mii_bus);
 err_out:
@@ -2405,9 +2394,9 @@ static int macb_init(struct platform_device *pdev)
 	if (bp->phy_interface == PHY_INTERFACE_MODE_RGMII)
 		val = GEM_BIT(RGMII);
 	else if (bp->phy_interface == PHY_INTERFACE_MODE_RMII &&
-		 (bp->caps & MACB_CAPS_USRIO_DEFAULT_IS_MII))
+		 (bp->caps & MACB_CAPS_USRIO_DEFAULT_IS_MII_GMII))
 		val = MACB_BIT(RMII);
-	else if (!(bp->caps & MACB_CAPS_USRIO_DEFAULT_IS_MII))
+	else if (!(bp->caps & MACB_CAPS_USRIO_DEFAULT_IS_MII_GMII))
 		val = MACB_BIT(MII);
 
 	if (bp->caps & MACB_CAPS_USRIO_HAS_CLKEN)
@@ -2738,7 +2727,7 @@ static int at91ether_init(struct platform_device *pdev)
 }
 
 static const struct macb_config at91sam9260_config = {
-	.caps = MACB_CAPS_USRIO_HAS_CLKEN | MACB_CAPS_USRIO_DEFAULT_IS_MII,
+	.caps = MACB_CAPS_USRIO_HAS_CLKEN | MACB_CAPS_USRIO_DEFAULT_IS_MII_GMII,
 	.clk_init = macb_clk_init,
 	.init = macb_init,
 };
@@ -2751,21 +2740,22 @@ static const struct macb_config pc302gem_config = {
 };
 
 static const struct macb_config sama5d2_config = {
-	.caps = 0,
+	.caps = MACB_CAPS_USRIO_DEFAULT_IS_MII_GMII,
 	.dma_burst_length = 16,
 	.clk_init = macb_clk_init,
 	.init = macb_init,
 };
 
 static const struct macb_config sama5d3_config = {
-	.caps = MACB_CAPS_SG_DISABLED | MACB_CAPS_GIGABIT_MODE_AVAILABLE,
+	.caps = MACB_CAPS_SG_DISABLED | MACB_CAPS_GIGABIT_MODE_AVAILABLE
+	      | MACB_CAPS_USRIO_DEFAULT_IS_MII_GMII,
 	.dma_burst_length = 16,
 	.clk_init = macb_clk_init,
 	.init = macb_init,
 };
 
 static const struct macb_config sama5d4_config = {
-	.caps = 0,
+	.caps = MACB_CAPS_USRIO_DEFAULT_IS_MII_GMII,
 	.dma_burst_length = 4,
 	.clk_init = macb_clk_init,
 	.init = macb_init,
@@ -2937,8 +2927,7 @@ static int macb_probe(struct platform_device *pdev)
 		    dev->base_addr, dev->irq, dev->dev_addr);
 
 	phydev = bp->phy_dev;
-	netdev_info(dev, "attached PHY driver [%s] (mii_bus:phy_addr=%s, irq=%d)\n",
-		    phydev->drv->name, dev_name(&phydev->dev), phydev->irq);
+	phy_attached_info(phydev);
 
 	return 0;
 
@@ -2968,7 +2957,6 @@ static int macb_remove(struct platform_device *pdev)
 		if (bp->phy_dev)
 			phy_disconnect(bp->phy_dev);
 		mdiobus_unregister(bp->mii_bus);
-		kfree(bp->mii_bus->irq);
 		mdiobus_free(bp->mii_bus);
 		unregister_netdev(dev);
 		clk_disable_unprepare(bp->tx_clk);

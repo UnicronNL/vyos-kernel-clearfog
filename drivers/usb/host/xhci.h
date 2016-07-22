@@ -1330,6 +1330,8 @@ union xhci_trb {
 #define TRB_MAX_BUFF_SHIFT		16
 #define TRB_MAX_BUFF_SIZE	(1 << TRB_MAX_BUFF_SHIFT)
 
+#define MAX_XHCI_CLOCKS		4
+
 struct xhci_segment {
 	union xhci_trb		*trbs;
 	/* private to HCD */
@@ -1540,7 +1542,7 @@ struct xhci_hcd {
 	int		msix_count;
 	struct msix_entry	*msix_entries;
 	/* optional clock */
-	struct clk		*clk;
+	struct clk		*clk[MAX_XHCI_CLOCKS];
 	/* data structures */
 	struct xhci_device_context_array *dcbaa;
 	struct xhci_ring	*cmd_ring;
@@ -1596,6 +1598,7 @@ struct xhci_hcd {
  */
 #define XHCI_STATE_DYING	(1 << 0)
 #define XHCI_STATE_HALTED	(1 << 1)
+#define XHCI_STATE_REMOVING	(1 << 2)
 	/* Statistics */
 	int			error_bitmask;
 	unsigned int		quirks;

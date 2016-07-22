@@ -70,7 +70,7 @@ static const char *phylink_an_mode_str(unsigned int mode)
 	static const char *modestr[] = {
 		[MLO_AN_PHY] = "phy",
 		[MLO_AN_FIXED] = "fixed",
-		[MLO_AN_SGMII] = "sgmii",
+		[MLO_AN_SGMII] = "SGMII",
 		[MLO_AN_8023Z] = "802.3z",
 	};
 
@@ -94,7 +94,6 @@ static int phylink_parse_fixedlink(struct phylink *pl, struct device_node *np)
 		pl->link_config.an_complete = 1;
 		pl->link_config.speed = speed;
 		pl->link_config.duplex = DUPLEX_HALF;
-		pl->link_config.pause = MLO_PAUSE_NONE;
 
 		if (of_property_read_bool(fixed_node, "full-duplex"))
 			pl->link_config.duplex = DUPLEX_FULL;
@@ -124,7 +123,6 @@ static int phylink_parse_fixedlink(struct phylink *pl, struct device_node *np)
 			pl->link_config.duplex = be32_to_cpu(fixed_prop[1]) ?
 						DUPLEX_FULL : DUPLEX_HALF;
 			pl->link_config.speed = be32_to_cpu(fixed_prop[2]);
-			pl->link_config.pause = MLO_PAUSE_NONE;
 			if (be32_to_cpu(fixed_prop[3]))
 				pl->link_config.pause |= MLO_PAUSE_SYM;
 			if (be32_to_cpu(fixed_prop[4]))
@@ -136,16 +134,6 @@ static int phylink_parse_fixedlink(struct phylink *pl, struct device_node *np)
 	}
 
 	if (pl->link_an_mode == MLO_AN_FIXED) {
-		/* Generate the supported/advertising masks */
-		if (pl->link_config.pause & MLO_PAUSE_SYM) {
-			pl->link_config.supported |= SUPPORTED_Pause;
-			pl->link_config.advertising |= ADVERTISED_Pause;
-		}
-		if (pl->link_config.pause & MLO_PAUSE_ASYM) {
-			pl->link_config.supported |= SUPPORTED_Asym_Pause;
-			pl->link_config.advertising |= ADVERTISED_Asym_Pause;
-		}
-
 		if (pl->link_config.speed > SPEED_1000 &&
 		    pl->link_config.duplex != DUPLEX_FULL)
 			netdev_warn(pl->netdev, "fixed link specifies half duplex for %dMbps link?\n",
@@ -184,20 +172,46 @@ static int phylink_parse_managed(struct phylink *pl, struct device_node *np)
 {
 	const char *managed;
 
-	if (of_property_read_string(np, "managed", &managed) == 0) {
-		if (strcmp(managed, "in-band-status") == 0) {
-			if (pl->link_an_mode == MLO_AN_FIXED) {
-				netdev_err(pl->netdev, "can't use both fixed-link and in-band-status\n");
-				return -EINVAL;
-			}
-			pl->link_an_mode = MLO_AN_SGMII;
-			pl->link_config.an_enabled = true;
+	if (of_property_read_string(np, "managed", &managed) == 0 &&
+	    strcmp(managed, "in-band-status") == 0) {
+		if (pl->link_an_mode == MLO_AN_FIXED) {
+			netdev_err(pl->netdev,
+				   "can't use both fixed-link and in-band-status\n");
+			return -EINVAL;
 		}
+		pl->link_an_mode = MLO_AN_SGMII;
+		pl->link_config.an_enabled = true;
 	}
 
 	return 0;
 }
 
+
+static int phylink_get_support(struct phylink *pl, unsigned int mode)
+{
+	struct phylink_link_state state = pl->link_config;
+	int ret;
+
+	ret = pl->ops->mac_get_support(pl->netdev, mode, &state);
+	if (ret == 0) {
+		pl->link_an_mode = mode;
+		pl->link_config = state;
+	}
+
+	return ret;
+}
+
+static void phylink_mac_config(struct phylink *pl,
+			       const struct phylink_link_state *state)
+{
+	pl->ops->mac_config(pl->netdev, pl->link_an_mode, state);
+}
+
+static void phylink_mac_an_restart(struct phylink *pl)
+{
+	if (pl->link_config.an_enabled)
+		pl->ops->mac_an_restart(pl->netdev, pl->link_an_mode);
+}
 
 static int phylink_get_mac_state(struct phylink *pl, struct phylink_link_state *state)
 {
@@ -295,12 +309,17 @@ static void phylink_resolve(struct work_struct *w)
 			break;
 
 		case MLO_AN_SGMII:
-			/* This should be the logical and of phy up and mac up */
-		case MLO_AN_8023Z:
 			phylink_get_mac_state(pl, &link_state);
-			if (pl->phydev)
+			if (pl->phydev) {
 				link_state.link = link_state.link &&
 						  pl->phy_state.link;
+				link_state.pause |= pl->phy_state.pause;
+				phylink_resolve_flow(pl, &link_state);
+			}
+			break;
+
+		case MLO_AN_8023Z:
+			phylink_get_mac_state(pl, &link_state);
 			break;
 		}
 	}
@@ -311,11 +330,12 @@ static void phylink_resolve(struct work_struct *w)
 			pl->ops->mac_link_down(ndev, pl->link_an_mode);
 			netdev_info(ndev, "Link is Down\n");
 		} else {
-			/* If we're using PHY autonegotiation, we need to keep
-			 * the MAC updated with the current link parameters.
+			/* If we have a PHY, we need the MAC updated with
+			 * the current link parameters (eg, in SGMII mode,
+			 * with flow control status.)
 			 */
-			if (pl->link_an_mode == MLO_AN_PHY)
-				pl->ops->mac_config(ndev, MLO_AN_PHY, &link_state);
+			if (pl->phydev)
+				phylink_mac_config(pl, &link_state);
 
 			pl->ops->mac_link_up(ndev, pl->link_an_mode,
 					     pl->phydev);
@@ -371,8 +391,7 @@ struct phylink *phylink_create(struct net_device *ndev, struct device_node *np,
 		return ERR_PTR(ret);
 	}
 
-	ret = pl->ops->mac_get_support(pl->netdev, pl->link_an_mode,
-				       &pl->link_config);
+	ret = phylink_get_support(pl, pl->link_an_mode);
 	if (ret) {
 		kfree(pl);
 		return ERR_PTR(ret);
@@ -424,7 +443,7 @@ static int phylink_bringup_phy(struct phylink *pl, struct phy_device *phy)
 	phy->phy_link_change = phylink_phy_change;
 
 	netdev_info(pl->netdev,
-		    "PHY [%s] driver [%s]\n", dev_name(&phy->dev),
+		    "PHY [%s] driver [%s]\n", dev_name(&phy->mdio.dev),
 		    phy->drv->name);
 
 	mutex_lock(&pl->state_mutex);
@@ -531,7 +550,7 @@ void phylink_start(struct phylink *pl)
 {
 	mutex_lock(&pl->config_mutex);
 
-	netdev_info(pl->netdev, "configuring for link AN mode %s\n",
+	netdev_info(pl->netdev, "configuring for %s link mode\n",
 		    phylink_an_mode_str(pl->link_an_mode));
 
 	/* Apply the link configuration to the MAC when starting. This allows
@@ -539,7 +558,7 @@ void phylink_start(struct phylink *pl)
 	 * ensures that we set the appropriate advertisment for Serdes links.
 	 */
 	phylink_resolve_flow(pl, &pl->link_config);
-	pl->ops->mac_config(pl->netdev, pl->link_an_mode, &pl->link_config);
+	phylink_mac_config(pl, &pl->link_config);
 
 	clear_bit(PHYLINK_DISABLE_STOPPED, &pl->phylink_disable_state);
 	phylink_run_resolve(pl);
@@ -697,8 +716,8 @@ static int phylink_ethtool_sset(struct phylink *pl, struct ethtool_cmd *cmd)
 	pl->link_config.duplex = cmd->duplex;
 	pl->link_config.an_enabled = cmd->autoneg != AUTONEG_DISABLE;
 
-	pl->ops->mac_config(pl->netdev, pl->link_an_mode, &pl->link_config);
-	pl->ops->mac_an_restart(pl->netdev, pl->link_an_mode);
+	phylink_mac_config(pl, &pl->link_config);
+	phylink_mac_an_restart(pl);
 	mutex_unlock(&pl->state_mutex);
 
 	return ret;
@@ -726,7 +745,7 @@ int phylink_ethtool_nway_reset(struct phylink *pl)
 	mutex_lock(&pl->config_mutex);
 	if (pl->phydev)
 		ret = genphy_restart_aneg(pl->phydev);
-	pl->ops->mac_an_restart(pl->netdev, pl->link_an_mode);
+	phylink_mac_an_restart(pl);
 	mutex_unlock(&pl->config_mutex);
 
 	return ret;
@@ -777,13 +796,13 @@ static int __phylink_ethtool_set_pauseparam(struct phylink *pl,
 	case MLO_AN_FIXED:
 		/* Should we allow fixed links to change against the config? */
 		phylink_resolve_flow(pl, config);
-		pl->ops->mac_config(pl->netdev, pl->link_an_mode, config);
+		phylink_mac_config(pl, config);
 		break;
 
 	case MLO_AN_SGMII:
 	case MLO_AN_8023Z:
-		pl->ops->mac_config(pl->netdev, pl->link_an_mode, config);
-		pl->ops->mac_an_restart(pl->netdev, pl->link_an_mode);
+		phylink_mac_config(pl, config);
+		phylink_mac_an_restart(pl);
 		break;
 	}
 
@@ -921,8 +940,8 @@ static int phylink_mii_read(struct phylink *pl, unsigned int phy_id,
 	struct phylink_link_state state;
 	int val = 0xffff;
 
-	if (pl->phydev && pl->phydev->addr != phy_id)
-		return mdiobus_read(pl->phydev->bus, phy_id, reg);
+	if (pl->phydev && pl->phydev->mdio.addr != phy_id)
+		return mdiobus_read(pl->phydev->mdio.bus, phy_id, reg);
 
 	if (!pl->phydev && phy_id != 0)
 		return val;
@@ -934,13 +953,13 @@ static int phylink_mii_read(struct phylink *pl, unsigned int phy_id,
 		break;
 
 	case MLO_AN_PHY:
-		val = mdiobus_read(pl->phydev->bus, phy_id, reg);
+		val = mdiobus_read(pl->phydev->mdio.bus, phy_id, reg);
 		break;
 
 	case MLO_AN_SGMII:
 		if (pl->phydev) {
-			val = mdiobus_read(pl->phydev->bus, pl->phydev->addr,
-					   reg);
+			val = mdiobus_read(pl->phydev->mdio.bus,
+					   pl->phydev->mdio.addr, reg);
 			break;
 		}
 		/* No phy, fall through to reading the MAC end */
@@ -959,8 +978,8 @@ static int phylink_mii_read(struct phylink *pl, unsigned int phy_id,
 static void phylink_mii_write(struct phylink *pl, unsigned int phy_id,
 			      unsigned int reg, unsigned int val)
 {
-	if (pl->phydev && pl->phydev->addr != phy_id) {
-		mdiobus_write(pl->phydev->bus, phy_id, reg, val);
+	if (pl->phydev && pl->phydev->mdio.addr != phy_id) {
+		mdiobus_write(pl->phydev->mdio.bus, phy_id, reg, val);
 		return;
 	}
 
@@ -972,12 +991,13 @@ static void phylink_mii_write(struct phylink *pl, unsigned int phy_id,
 		break;
 
 	case MLO_AN_PHY:
-		mdiobus_write(pl->phydev->bus, pl->phydev->addr, reg, val);
+		mdiobus_write(pl->phydev->mdio.bus, pl->phydev->mdio.addr,
+			      reg, val);
 		break;
 
 	case MLO_AN_SGMII:
 		if (pl->phydev) {
-			mdiobus_write(pl->phydev->bus, phy_id, reg, val);
+			mdiobus_write(pl->phydev->mdio.bus, phy_id, reg, val);
 			break;
 		}
 		/* No phy, fall through to reading the MAC end */
@@ -995,7 +1015,7 @@ int phylink_mii_ioctl(struct phylink *pl, struct ifreq *ifr, int cmd)
 
 	switch (cmd) {
 	case SIOCGMIIPHY:
-		mii_data->phy_id = pl->phydev ? pl->phydev->addr : 0;
+		mii_data->phy_id = pl->phydev ? pl->phydev->mdio.addr : 0;
 		/* fallthrough */
 
 	case SIOCGMIIREG:
@@ -1091,25 +1111,18 @@ EXPORT_SYMBOL_GPL(phylink_set_link_port);
 
 int phylink_set_link_an_mode(struct phylink *pl, unsigned int mode)
 {
-	struct phylink_link_state state;
 	int ret = 0;
 
 	mutex_lock(&pl->config_mutex);
 	if (pl->link_an_mode != mode) {
-		netdev_info(pl->netdev, "switching to link AN mode %s\n",
-			    phylink_an_mode_str(mode));
-
-		state = pl->link_config;
-		ret = pl->ops->mac_get_support(pl->netdev, mode, &state);
+		ret = phylink_get_support(pl, mode);
 		if (ret == 0) {
-			pl->link_an_mode = mode;
-			pl->link_config = state;
-
 			if (!test_bit(PHYLINK_DISABLE_STOPPED,
 				      &pl->phylink_disable_state))
-				pl->ops->mac_config(pl->netdev,
-						    pl->link_an_mode,
-						    &pl->link_config);
+				phylink_mac_config(pl, &pl->link_config);
+
+			netdev_info(pl->netdev, "switched to %s link mode\n",
+				    phylink_an_mode_str(mode));
 		}
 	}
 	mutex_unlock(&pl->config_mutex);

@@ -383,6 +383,8 @@ static const char *sfp_connector(unsigned int connector)
 	switch (connector) {
 	case SFP_CONNECTOR_UNSPEC:
 		return "unknown/unspecified";
+	case SFP_CONNECTOR_SC:
+		return "SC";
 	case SFP_CONNECTOR_FIBERJACK:
 		return "Fiberjack";
 	case SFP_CONNECTOR_LC:
@@ -511,12 +513,7 @@ static void sfp_sm_probe_phy(struct sfp *sfp)
 		return;
 	}
 
-	/* We found a PHY.  Switch the link to PHY mode, so we use phylib
-	 * to feed the negotiation results to the MAC.  This avoids the
-	 * question over which Serdes mode the PHY is operating.
-	 */
 	sfp->mod_phy = phy;
-	phylink_set_link_an_mode(sfp->phylink, MLO_AN_PHY);
 	phy_start(phy);
 }
 
@@ -575,8 +572,25 @@ static void sfp_sm_mod_init(struct sfp *sfp)
 	sfp_sm_next(sfp, SFP_S_INIT, T_INIT_JIFFIES);
 	sfp->sm_retries = 5;
 
-	if (sfp->phylink && sfp->id.base.e1000_base_t)
-		sfp_sm_probe_phy(sfp);
+	if (sfp->phylink) {
+		/* Setting the serdes link mode is guesswork: there's no
+		 * field in the EEPROM which indicates what mode should
+		 * be used.
+		 *
+		 * If it's a gigabit-only fiber module, it probably does
+		 * not have a PHY, so switch to 802.3z negotiation mode.
+		 * Otherwise, switch to SGMII mode (which is required to
+		 * support non-gigabit speeds) and probe for a PHY.
+		 */
+		if (!sfp->id.base.e1000_base_t &&
+		    !sfp->id.base.e100_base_lx &&
+		    !sfp->id.base.e100_base_fx) {
+			phylink_set_link_an_mode(sfp->phylink, MLO_AN_8023Z);
+		} else {
+			phylink_set_link_an_mode(sfp->phylink, MLO_AN_SGMII);
+			sfp_sm_probe_phy(sfp);
+		}
+	}
 }
 
 static int sfp_sm_mod_probe(struct sfp *sfp)
@@ -732,21 +746,6 @@ static int sfp_sm_mod_probe(struct sfp *sfp)
 			port = PORT_FIBRE;
 		}
 		phylink_set_link_port(sfp->phylink, support, port);
-
-		/* Setting the serdes link mode is guesswork: there's no
-		 * field in the EEPROM which indicates what mode should
-		 * be used.
-		 *
-		 * If it's a fiber module, it probably does not have a
-		 * PHY, so switch to 802.3z negotiation mode.
-		 *
-		 * If it's a copper module, try SGMII mode.  If that
-		 * doesn't work, we should try switching to 802.3z mode.
-		 */
-		if (!sfp->id.base.e1000_base_t)
-			phylink_set_link_an_mode(sfp->phylink, MLO_AN_8023Z);
-		else
-			phylink_set_link_an_mode(sfp->phylink, MLO_AN_SGMII);
 	}
 
 	return 0;

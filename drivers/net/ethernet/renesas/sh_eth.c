@@ -1185,11 +1185,8 @@ static void sh_eth_ring_format(struct net_device *ndev)
 			break;
 		sh_eth_set_receive_align(skb);
 
-		/* RX descriptor */
-		rxdesc = &mdp->rx_ring[i];
 		/* The size of the buffer is a multiple of 32 bytes. */
 		buf_len = ALIGN(mdp->rx_buf_sz, 32);
-		rxdesc->len = cpu_to_edmac(mdp, buf_len << 16);
 		dma_addr = dma_map_single(&ndev->dev, skb->data, buf_len,
 					  DMA_FROM_DEVICE);
 		if (dma_mapping_error(&ndev->dev, dma_addr)) {
@@ -1197,6 +1194,10 @@ static void sh_eth_ring_format(struct net_device *ndev)
 			break;
 		}
 		mdp->rx_skbuff[i] = skb;
+
+		/* RX descriptor */
+		rxdesc = &mdp->rx_ring[i];
+		rxdesc->len = cpu_to_edmac(mdp, buf_len << 16);
 		rxdesc->addr = cpu_to_edmac(mdp, dma_addr);
 		rxdesc->status = cpu_to_edmac(mdp, RD_RACT | RD_RFP);
 
@@ -1212,7 +1213,8 @@ static void sh_eth_ring_format(struct net_device *ndev)
 	mdp->dirty_rx = (u32) (i - mdp->num_rx_ring);
 
 	/* Mark the last entry as wrapping the ring. */
-	rxdesc->status |= cpu_to_edmac(mdp, RD_RDLE);
+	if (rxdesc)
+		rxdesc->status |= cpu_to_edmac(mdp, RD_RDLE);
 
 	memset(mdp->tx_ring, 0, tx_ringsize);
 
@@ -1877,8 +1879,7 @@ static int sh_eth_phy_init(struct net_device *ndev)
 		return PTR_ERR(phydev);
 	}
 
-	netdev_info(ndev, "attached PHY %d (IRQ %d) to driver %s\n",
-		    phydev->addr, phydev->irq, phydev->drv->name);
+	phy_attached_info(phydev);
 
 	mdp->phydev = phydev;
 
@@ -2911,7 +2912,7 @@ static int sh_mdio_release(struct sh_eth_private *mdp)
 static int sh_mdio_init(struct sh_eth_private *mdp,
 			struct sh_eth_plat_data *pd)
 {
-	int ret, i;
+	int ret;
 	struct bb_info *bitbang;
 	struct platform_device *pdev = mdp->pdev;
 	struct device *dev = &mdp->pdev->dev;
@@ -2941,20 +2942,10 @@ static int sh_mdio_init(struct sh_eth_private *mdp,
 	snprintf(mdp->mii_bus->id, MII_BUS_ID_SIZE, "%s-%x",
 		 pdev->name, pdev->id);
 
-	/* PHY IRQ */
-	mdp->mii_bus->irq = devm_kmalloc_array(dev, PHY_MAX_ADDR, sizeof(int),
-					       GFP_KERNEL);
-	if (!mdp->mii_bus->irq) {
-		ret = -ENOMEM;
-		goto out_free_bus;
-	}
-
 	/* register MDIO bus */
 	if (dev->of_node) {
 		ret = of_mdiobus_register(mdp->mii_bus, dev->of_node);
 	} else {
-		for (i = 0; i < PHY_MAX_ADDR; i++)
-			mdp->mii_bus->irq[i] = PHY_POLL;
 		if (pd->phy_irq > 0)
 			mdp->mii_bus->irq[pd->phy] = pd->phy_irq;
 

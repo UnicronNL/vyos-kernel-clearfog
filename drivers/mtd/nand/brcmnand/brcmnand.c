@@ -309,6 +309,36 @@ static const u16 brcmnand_regs_v60[] = {
 	[BRCMNAND_FC_BASE]		= 0x400,
 };
 
+/* BRCMNAND v7.1 */
+static const u16 brcmnand_regs_v71[] = {
+	[BRCMNAND_CMD_START]		=  0x04,
+	[BRCMNAND_CMD_EXT_ADDRESS]	=  0x08,
+	[BRCMNAND_CMD_ADDRESS]		=  0x0c,
+	[BRCMNAND_INTFC_STATUS]		=  0x14,
+	[BRCMNAND_CS_SELECT]		=  0x18,
+	[BRCMNAND_CS_XOR]		=  0x1c,
+	[BRCMNAND_LL_OP]		=  0x20,
+	[BRCMNAND_CS0_BASE]		=  0x50,
+	[BRCMNAND_CS1_BASE]		=     0,
+	[BRCMNAND_CORR_THRESHOLD]	=  0xdc,
+	[BRCMNAND_CORR_THRESHOLD_EXT]	=  0xe0,
+	[BRCMNAND_UNCORR_COUNT]		=  0xfc,
+	[BRCMNAND_CORR_COUNT]		= 0x100,
+	[BRCMNAND_CORR_EXT_ADDR]	= 0x10c,
+	[BRCMNAND_CORR_ADDR]		= 0x110,
+	[BRCMNAND_UNCORR_EXT_ADDR]	= 0x114,
+	[BRCMNAND_UNCORR_ADDR]		= 0x118,
+	[BRCMNAND_SEMAPHORE]		= 0x150,
+	[BRCMNAND_ID]			= 0x194,
+	[BRCMNAND_ID_EXT]		= 0x198,
+	[BRCMNAND_LL_RDATA]		= 0x19c,
+	[BRCMNAND_OOB_READ_BASE]	= 0x200,
+	[BRCMNAND_OOB_READ_10_BASE]	=     0,
+	[BRCMNAND_OOB_WRITE_BASE]	= 0x280,
+	[BRCMNAND_OOB_WRITE_10_BASE]	=     0,
+	[BRCMNAND_FC_BASE]		= 0x400,
+};
+
 enum brcmnand_cs_reg {
 	BRCMNAND_CS_CFG_EXT = 0,
 	BRCMNAND_CS_CFG,
@@ -404,7 +434,9 @@ static int brcmnand_revision_init(struct brcmnand_controller *ctrl)
 	}
 
 	/* Register offsets */
-	if (ctrl->nand_version >= 0x0600)
+	if (ctrl->nand_version >= 0x0701)
+		ctrl->reg_offsets = brcmnand_regs_v71;
+	else if (ctrl->nand_version >= 0x0600)
 		ctrl->reg_offsets = brcmnand_regs_v60;
 	else if (ctrl->nand_version >= 0x0500)
 		ctrl->reg_offsets = brcmnand_regs_v50;
@@ -874,7 +906,7 @@ static struct nand_ecclayout *brcmstb_choose_ecc_layout(
 
 static void brcmnand_wp(struct mtd_info *mtd, int wp)
 {
-	struct nand_chip *chip = mtd->priv;
+	struct nand_chip *chip = mtd_to_nand(mtd);
 	struct brcmnand_host *host = chip->priv;
 	struct brcmnand_controller *ctrl = host->ctrl;
 
@@ -1040,7 +1072,7 @@ static void brcmnand_cmd_ctrl(struct mtd_info *mtd, int dat,
 
 static int brcmnand_waitfunc(struct mtd_info *mtd, struct nand_chip *this)
 {
-	struct nand_chip *chip = mtd->priv;
+	struct nand_chip *chip = mtd_to_nand(mtd);
 	struct brcmnand_host *host = chip->priv;
 	struct brcmnand_controller *ctrl = host->ctrl;
 	unsigned long timeo = msecs_to_jiffies(100);
@@ -1114,7 +1146,7 @@ static int brcmnand_low_level_op(struct brcmnand_host *host,
 static void brcmnand_cmdfunc(struct mtd_info *mtd, unsigned command,
 			     int column, int page_addr)
 {
-	struct nand_chip *chip = mtd->priv;
+	struct nand_chip *chip = mtd_to_nand(mtd);
 	struct brcmnand_host *host = chip->priv;
 	struct brcmnand_controller *ctrl = host->ctrl;
 	u64 addr = (u64)page_addr << chip->page_shift;
@@ -1214,7 +1246,7 @@ static void brcmnand_cmdfunc(struct mtd_info *mtd, unsigned command,
 
 static uint8_t brcmnand_read_byte(struct mtd_info *mtd)
 {
-	struct nand_chip *chip = mtd->priv;
+	struct nand_chip *chip = mtd_to_nand(mtd);
 	struct brcmnand_host *host = chip->priv;
 	struct brcmnand_controller *ctrl = host->ctrl;
 	uint8_t ret = 0;
@@ -1282,7 +1314,7 @@ static void brcmnand_write_buf(struct mtd_info *mtd, const uint8_t *buf,
 				   int len)
 {
 	int i;
-	struct nand_chip *chip = mtd->priv;
+	struct nand_chip *chip = mtd_to_nand(mtd);
 	struct brcmnand_host *host = chip->priv;
 
 	switch (host->last_cmd) {
@@ -1914,7 +1946,6 @@ static int brcmnand_init_cs(struct brcmnand_host *host)
 	struct nand_chip *chip;
 	int ret;
 	u16 cfg_offs;
-	struct mtd_part_parser_data ppdata = { .of_node = dn };
 
 	ret = of_property_read_u32(dn, "reg", &host->cs);
 	if (ret) {
@@ -1993,7 +2024,7 @@ static int brcmnand_init_cs(struct brcmnand_host *host)
 	if (nand_scan_tail(mtd))
 		return -ENXIO;
 
-	return mtd_device_parse_register(mtd, NULL, &ppdata, NULL, 0);
+	return mtd_device_register(mtd, NULL, 0);
 }
 
 static void brcmnand_save_restore_cs_config(struct brcmnand_host *host,
@@ -2068,7 +2099,7 @@ static int brcmnand_resume(struct device *dev)
 
 	list_for_each_entry(host, &ctrl->host_list, node) {
 		struct mtd_info *mtd = &host->mtd;
-		struct nand_chip *chip = mtd->priv;
+		struct nand_chip *chip = mtd_to_nand(mtd);
 
 		brcmnand_save_restore_cs_config(host, 1);
 
